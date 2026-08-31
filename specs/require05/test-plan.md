@@ -1,7 +1,7 @@
 # 实时信息通道测试计划
 
 > 配套文档：`requirement.md`（需求）、`plan.md`（架构与实施方案）、`dev-plan.md`（开发计划）
-> 测试对象：`ruoyi-websocket` 模块 + 业务推送接入 + 微前端消息总线
+> 测试对象：`ruoyi-common-websocket` 模块（+ 共享 `ruoyi-api-websocket`）+ 业务推送接入 + 微前端消息总线
 
 ---
 
@@ -38,13 +38,13 @@
 
 | 项 | 说明 |
 |----|------|
-| 后端 | `ruoyi-websocket` 单实例 + 双实例（验证多实例一致性） |
-| 中间件 | RabbitMQ（topic 交换机 + 队列）、Redis（Redisson） |
+| 后端 | 内嵌 `ruoyi-common-websocket` 的服务，单实例 + 双实例（验证多实例一致性） |
+| 中间件 | RabbitMQ（fanout 交换机 + 每实例队列）、Redis（Redisson） |
 | 业务服务 | system（通知示例链路） |
 | 前端 | 微前端主应用（RuoYi-UI）+ HIS 子应用 |
 | 测试工具 | Postman（REST）、浏览器 DevTools（WebSocket 帧）、`wscat`/脚本（压测连接） |
 
-> 多实例一致性用例需至少部署 2 个 `ruoyi-websocket` 实例。
+> 多实例一致性用例需至少部署 2 个内嵌 websocket 模块的服务实例。
 
 ---
 
@@ -79,7 +79,7 @@
 
 | 用例ID | 用例名称 | 步骤 | 预期结果 |
 |--------|----------|------|----------|
-| WS-SES-001 | 合法握手 | 携带有效 token 连接 `/websocket/{clientKey}` | 连接成功，会话写入 Redis |
+| WS-SES-001 | 合法握手 | 携带有效 token 连接 `/websocket` | 连接成功，会话写入本实例内存 |
 | WS-SES-002 | 非法握手 | 携带无效/缺失 token 连接 | 拒绝连接 |
 | WS-SES-003 | 正常断开 | 客户端主动 close | 会话移除，订阅同步清理 |
 | WS-SES-004 | 心跳保活 | 客户端周期发送 `ping` | 服务端更新心跳时间，不超时 |
@@ -93,9 +93,9 @@
 | WS-SUB-001 | 订阅成功 | `POST /subscribe` 提交 1~3 级主题 | 写入 `ws:sub:{topic}` 与反向索引 |
 | WS-SUB-002 | 重复订阅幂等 | 重复提交同一主题 | 不产生重复订阅，Set 去重 |
 | WS-SUB-003 | 退订 | `POST /unsubscribe` | 从正向索引移除；set 空则删 key |
-| WS-SUB-004 | 查询订阅列表 | `GET /subscription/{clientKey}` | 返回该客户端全部主题 |
-| WS-SUB-005 | 非法 clientKey | 用不存在的 clientKey 订阅 | 返回错误 |
-| WS-SUB-006 | 伪造 clientKey | 用他人 clientKey 订阅 | 校验归属失败，拒绝 |
+| WS-SUB-004 | 查询订阅列表 | `GET /websocket/subscription`（Sa-Token 识别用户） | 返回该用户全部主题 |
+| WS-SUB-005 | 未认证订阅 | 未登录/无效 token 调订阅接口 | 返回错误 |
+| WS-SUB-006 | 越权订阅 | 用他人 token 订阅他人主题 | 鉴权拦截，拒绝 |
 | WS-SUB-007 | 非法主题 | 提交非法主题 | 拒绝并返回错误码 |
 | WS-SUB-008 | 断开清理订阅 | 订阅后断开连接 | 该客户端的订阅被全部清理 |
 
@@ -103,7 +103,7 @@
 
 | 用例ID | 用例名称 | 步骤 | 预期结果 |
 |--------|----------|------|----------|
-| WS-RT-001 | 定向推送 | 发布 `sessionKeys=[keyA]` | 仅 keyA 收到 |
+| WS-RT-001 | 定向推送 | 发布 `sessionKeys=[1001]` | 仅 userId=1001 收到 |
 | WS-RT-002 | 模块级命中 | 订阅 `his`，发布 `his/order/10086` | 命中并推送 |
 | WS-RT-003 | 业务级命中 | 订阅 `his/order`，发布 `his/order/10086` | 命中并推送 |
 | WS-RT-004 | 业务ID精确命中 | 订阅 `his/order/10086`，发布同主题 | 命中并推送 |
@@ -118,7 +118,7 @@
 |--------|----------|------|----------|
 | WS-MQ-001 | 生产消费闭环 | 业务服务 publish → 消费 | 消息正确入队并消费 |
 | WS-MQ-002 | JSON 格式 | 检查 `WebSocketMessageDto` 序列化 | 字段完整，`message` 为字符串透传 |
-| WS-MQ-003 | 多实例一致性 | 客户端连实例 A，消息被实例 B 消费 | 通过 Redis 仍推送到实例 A 的客户端 |
+| WS-MQ-003 | 多实例一致性 | 客户端连实例 A，消息由实例 B 发布 | fanout 广播到各实例，实例 A 推本地会话 |
 | WS-MQ-004 | 消费异常不阻塞 | 推送失败的消息 | 正常 ack，不堆积、不影响后续消息 |
 
 ### 5.6 前端（WS-FE）
@@ -148,7 +148,7 @@
 
 | 数据 | 说明 |
 |------|------|
-| clientKey 样例 | `ckA`、`ckB`、`ckC`（分别订阅不同粒度主题） |
+| userId 样例 | 用户 1001、1002、1003（分别订阅不同粒度主题） |
 | 主题样例 | `system`、`system/sysNotice`、`system/sysNotice/123`、`his/order/10086` |
 | 测试 token | 有效 token、无效 token、过期 token 各一个 |
 | 边界主题 | `his/orderX`（用于前缀误判用例）、含非法字符主题 |
@@ -158,7 +158,7 @@
 ## 七、准入 / 准出标准
 
 **准入（开始系统测试前）：**
-- `ruoyi-websocket` 服务可正常启动
+- 内嵌 `ruoyi-common-websocket` 的服务可正常启动
 - 订阅/退订/查询接口可用
 - 业务示例链路（system 通知）可端到端推送
 
@@ -185,7 +185,7 @@
 
 | 阶段 | 内容 | 时机 |
 |------|------|------|
-| 单元/接口测试 | WS-TP、WS-SUB、WS-SES | 随开发同步（T1.2~T1.5 完成后） |
+| 单元/接口测试 | WS-TP、WS-SUB、WS-SES | 随开发同步（T1.1~T1.4 完成后） |
 | 集成测试 | WS-MQ、WS-RT | M1（Phase 1 完成）后 |
 | 端到端测试 | WS-RT 全链路、WS-FE | M2/M3 后 |
 | 异常与性能 | WS-EX、WS-PF | 功能稳定后 |
