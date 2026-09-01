@@ -258,45 +258,48 @@ GET /websocket/subscription
 
 ### 5.1 后端（共享 api 模块 + 演进 websocket 模块）
 
-**共享 api 模块 `ruoyi-api-websocket`（轻量，业务侧与 websocket 侧共同引用）：**
+**共享 api 模块 `ruoyi-api-websocket`**（基础包 `org.dromara.websocket.api`，轻量，业务侧与 websocket 侧共同引用）：
 
-| # | 类 | 职责 |
-|---|----|------|
-| 1 | `WebSocketMessageDto` | 消息 DTO（type / sessionKeys / message / source） |
-| 2 | `WebSocketConstants` | 交换机名等常量（供业务侧发布使用） |
-| 3 | `WebSocketTopic` | 主类（模块）+ 常见子类常量 |
-| 4 | `WebSocketTopicUtils` | 主题工具：build/split/validate/prefixes |
+| # | 完整类名 | 职责 |
+|---|----------|------|
+| 1 | `org.dromara.websocket.api.dto.WebSocketMessageDto` | 消息 DTO（type / sessionKeys / message / source） |
+| 2 | `org.dromara.websocket.api.constant.WebSocketConstants` | 交换机名常量 `WEBSOCKET_EXCHANGE`（供业务侧发布使用） |
+| 3 | `org.dromara.websocket.api.constant.WebSocketTopic` | 主类（模块）+ 常见子类常量 |
+| 4 | `org.dromara.websocket.api.utils.WebSocketTopicUtils` | 主题工具：build / split / validate / prefixes |
 
-**websocket 模块 `ruoyi-common-websocket`（连接/订阅/消费/推送，业务侧不引用）：**
+**websocket 模块 `ruoyi-common-websocket`**（基础包 `org.dromara.common.websocket`，连接/订阅/消费/推送，业务侧不引用）：
 
-| # | 类 | 改动 |
-|---|----|------|
-| 5 | `config/WebSocketConfig.java` | 增补 RabbitMQ 交换机/队列 Bean |
-| 6 | `config/properties/WebSocketProperties.java` | 基本不变 |
-| 7 | `handler/PlusWebSocketHandler.java` | 基本不变（连接/心跳/关闭逻辑复用） |
-| 8 | `interceptor/PlusWebSocketInterceptor.java` | 基本不变（Sa-Token 鉴权） |
-| 9 | `holder/WebSocketSessionHolder.java` | 保持（内存会话，key=userId） |
-| 10 | `utils/WebSocketUtils.java` | **移除 publish/subscribe，仅保留 sendMessage（内部推送）** |
-| 11 | `listener/WebSocketTopicListener.java` | **改为 @RabbitListener 消费 + 前缀匹配路由** |
-| 12 | `config/WebSocketRabbitConfig.java`（新增） | fanout 交换机 + 每实例独立队列（autoDelete） |
-| 13 | `service/WebSocketSubscribeService.java`（新增） | 订阅关系增删查：`ws:sub:{topic}` 与 `ws:userSub:{userId}` |
-| 14 | `controller/WebSocketSubscribeController.java`（新增） | 订阅/退订/查询 REST 接口（对应 4.2） |
+| # | 完整类名 | 状态 / 改动 |
+|---|----------|-------------|
+| 5 | `org.dromara.common.websocket.config.WebSocketConfig` | 自动装配入口：注册 handler/interceptor/监听器 + 订阅 service/controller Bean，`@Import` RabbitMQ 配置 |
+| 6 | `org.dromara.common.websocket.config.properties.WebSocketProperties` | 基本不变（path / allowedOrigins / enabled） |
+| 7 | `org.dromara.common.websocket.handler.PlusWebSocketHandler` | 连接/心跳回显；断开时清理订阅 |
+| 8 | `org.dromara.common.websocket.interceptor.PlusWebSocketInterceptor` | 基本不变（Sa-Token 鉴权） |
+| 9 | `org.dromara.common.websocket.holder.WebSocketSessionHolder` | 保持（内存会话 Map，key=userId） |
+| 10 | `org.dromara.common.websocket.utils.WebSocketUtils` | **移除 publish/subscribe，仅保留 sendMessage / sendPongMessage** |
+| 11 | `org.dromara.common.websocket.listener.WebSocketTopicListener` | **改为 @RabbitListener 消费 JSON + 前缀匹配路由 + 消息信封** |
+| 12 | `org.dromara.common.websocket.config.WebSocketRabbitConfig`（新增） | fanout 交换机 `websocket.exchange` + 每实例独立队列 |
+| 13 | `org.dromara.common.websocket.service.WebSocketSubscribeService`（新增） | 订阅关系增删查：`ws:sub:{topic}` 与 `ws:userSub:{userId}` |
+| 14 | `org.dromara.common.websocket.controller.WebSocketSubscribeController`（新增） | 订阅/退订/查询 REST 接口 |
+| 15 | `org.dromara.common.websocket.constant.WebSocketConstants` | 内部常量 LOGIN_USER_KEY / PING / PONG（已移除 WEB_SOCKET_TOPIC） |
+
+> 注意：存在两个 `WebSocketConstants`——`org.dromara.websocket.api.constant.WebSocketConstants`（共享，交换机名）与 `org.dromara.common.websocket.constant.WebSocketConstants`（模块内部，会话/心跳常量），二者包不同、用途不同。
 
 ### 5.2 后端（业务侧发布，仅新增少量代码）
 
-| # | 位置 | 改动 |
-|---|------|------|
-| 15 | 各业务服务（system/his 等） | 依赖 `spring-boot-starter-amqp` + `ruoyi-api-websocket`，通过 `RabbitTemplate` 发布消息到交换机（**不引用 websocket 模块**） |
+| # | 完整类名 | 改动 |
+|---|----------|------|
+| 16 | `org.dromara.system.controller.system.SysNoticeController` | 依赖 `spring-boot-starter-amqp` + `ruoyi-api-websocket`，通过 `RabbitTemplate` 发布消息到交换机（**不引用 websocket 模块**） |
 
 ### 5.3 前端（主应用 + 子应用）
 
 | # | 文件 | 改动 |
 |---|------|------|
-| 16 | 主应用 `src/utils/websocket.ts`（已有） | **演进**：onmessage 解析 JSON，按 `type` 通过 `msgBus.emit('ws:'+type, data)` 派发 |
-| 17 | 主应用 `src/micro/messageBus.ts`（已有） | 复用 mitt 总线（已注入子应用），约定 `ws:{type}` 事件命名 |
-| 18 | 主应用订阅 API 封装 `src/api/websocket/index.ts`（新增） | 封装 subscribe / unsubscribe / 查询接口 |
-| 19 | 子应用（如 HIS） | 通过 `msgBus.on('ws:his/*')` 接收推送；必要时上送消息、申请订阅 |
-| 20 | 鉴权/登录处 | 登录成功后调用 `initWebSocket` 建连 + 初始订阅 |
+| 17 | 主应用 `src/utils/websocket.ts`（已有） | **演进**：onmessage 解析 JSON，按 `type` 通过 `msgBus.emit('ws:'+type, data)` 派发 |
+| 18 | 主应用 `src/micro/messageBus.ts`（已有） | 复用 mitt 总线（已注入子应用），约定 `ws:{type}` 事件命名 |
+| 19 | 主应用订阅 API 封装 `src/api/websocket/index.ts`（新增） | 封装 subscribe / unsubscribe / 查询接口 |
+| 20 | 子应用（如 HIS）`src/views/home.vue` | 通过 `msgBus.on('ws:his/order')` 接收推送示例 |
+| 21 | 主应用 `src/layout/index.vue` | 登录后调用 `initWebSocket` 建连 + `subscribe(['system','system/sysNotice'])` 初始订阅 |
 
 ---
 

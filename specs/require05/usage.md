@@ -50,9 +50,10 @@
 
 ```java
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.dromara.api.websocket.dto.WebSocketMessageDto;
-import org.dromara.api.websocket.constant.WebSocketConstants;
-import org.dromara.api.websocket.utils.WebSocketTopicUtils;
+import org.dromara.common.json.utils.JsonUtils;
+import org.dromara.websocket.api.constant.WebSocketConstants;
+import org.dromara.websocket.api.dto.WebSocketMessageDto;
+import org.dromara.websocket.api.utils.WebSocketTopicUtils;
 
 @Autowired
 private RabbitTemplate rabbitTemplate;
@@ -67,7 +68,7 @@ String body = JSONUtil.toJsonStr(Map.of("event", "order.paid", "orderId", orderI
 WebSocketMessageDto dto = new WebSocketMessageDto();
 dto.setType(topic);
 dto.setMessage(body);
-rabbitTemplate.convertAndSend(WebSocketConstants.WEBSOCKET_EXCHANGE, "", dto);
+rabbitTemplate.convertAndSend(WebSocketConstants.WEBSOCKET_EXCHANGE, "", JsonUtils.toJsonString(dto));
 ```
 
 按需两种变体：
@@ -75,7 +76,7 @@ rabbitTemplate.convertAndSend(WebSocketConstants.WEBSOCKET_EXCHANGE, "", dto);
 ```java
 dto.setSessionKeys(List.of(1001L, 1002L)); // 定向：指定 userId（优先级最高）
 dto.setType(null);                          // 不设主题：广播给全部在线客户端
-rabbitTemplate.convertAndSend(WebSocketConstants.WEBSOCKET_EXCHANGE, "", dto);
+rabbitTemplate.convertAndSend(WebSocketConstants.WEBSOCKET_EXCHANGE, "", JsonUtils.toJsonString(dto));
 ```
 
 ### 2.3 你不需要关心的
