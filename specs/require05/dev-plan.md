@@ -85,9 +85,9 @@
 
 - 主题格式：`{主类}/{子类}/{具体业务ID}`（1~3 段，`/` 分隔）。
 - 存储（Redis，正向+反向索引）：
-  - `ws:sub:{topic}` → Set<userId>（精确主题 → 订阅用户）
-  - `ws:userSub:{userId}` → Set<topic>（用户 → 已订阅主题，断开清理用）
-- 路由：消费端对 `type` 生成全部前缀（如 `his/order/10086` → `his`、`his/order`、`his/order/10086`），并集各 `ws:sub:{前缀}` 得目标 userId，推送本地会话。
+  - `global:ws:sub:{topic}` → Set<userId>（精确主题 → 订阅用户）
+  - `global:ws:userSub:{userId}` → Set<topic>（用户 → 已订阅主题，断开清理用）
+- 路由：消费端对 `type` 生成全部前缀（如 `his/order/10086` → `his`、`his/order`、`his/order/10086`），并集各 `global:ws:sub:{前缀}` 得目标 userId，推送本地会话。
 - 优先级：`sessionKeys` 非空（定向）> `type` 非空（订阅前缀匹配）> 均空（广播）。
 
 ---

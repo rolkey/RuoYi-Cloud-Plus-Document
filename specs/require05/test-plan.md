@@ -90,7 +90,7 @@
 
 | 用例ID | 用例名称 | 步骤 | 预期结果 |
 |--------|----------|------|----------|
-| WS-SUB-001 | 订阅成功 | `POST /subscribe` 提交 1~3 级主题 | 写入 `ws:sub:{topic}` 与反向索引 |
+| WS-SUB-001 | 订阅成功 | `POST /subscribe` 提交 1~3 级主题 | 写入 `global:ws:sub:{topic}` 与反向索引 |
 | WS-SUB-002 | 重复订阅幂等 | 重复提交同一主题 | 不产生重复订阅，Set 去重 |
 | WS-SUB-003 | 退订 | `POST /unsubscribe` | 从正向索引移除；set 空则删 key |
 | WS-SUB-004 | 查询订阅列表 | `GET /websocket/subscription`（Sa-Token 识别用户） | 返回该用户全部主题 |

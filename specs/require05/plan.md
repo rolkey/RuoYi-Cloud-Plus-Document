@@ -73,14 +73,14 @@
 
 ```
 ① 客户端订阅            ┌──────────────────────────────────────────┐
-  POST /subscribe ────▶ │ 写入 Redis:  ws:sub:{topic} → Set<userId> │
-  {types}（Sa-Token）    │              ws:userSub:{userId} → Set<topic>│
+  POST /subscribe ────▶ │ 写入 Redis:  global:ws:sub:{topic} → Set<userId> │
+  {types}（Sa-Token）    │              global:ws:userSub:{userId} → Set<topic>│
                         └──────────────────────────────────────────┘
 
 ② 服务推送                                    ③ 按前缀匹配路由
   业务服务 publishMessage ─▶ RabbitMQ(fanout) ─▶ 每实例 Consumer
                                                  ─▶ 拆分 topic 生成前缀
-                                                 ─▶ 并集各 ws:sub:{前缀} 的 userId
+                                                 ─▶ 并集各 global:ws:sub:{前缀} 的 userId
                                                  ─▶ 推送给本实例内存中该 userId 的会话
 ```
 
@@ -197,6 +197,24 @@ GET /websocket/subscription
 }
 ```
 
+**发布消息（测试推送，gated by websocket.enabled）：**
+
+```
+POST /websocket/publish
+请求体：
+{
+  "type": "system/sysNotice",
+  "sessionKeys": [],
+  "message": "测试推送消息",
+  "source": "his"
+}
+响应：
+{
+  "code": 200,
+  "msg": "操作成功"
+}
+```
+
 > 说明：调用者身份由 Sa-Token 识别（`LoginHelper.getUserId()`），**请求体无需携带 clientKey/userId**，从源头上杜绝伪造他人身份订阅。
 
 ### 4.3 客户端消息（WebSocket 推送 / 上送）
@@ -247,10 +265,12 @@ GET /websocket/subscription
 | 位置 | Key | 类型 | 说明 |
 |------|-----|------|------|
 | 各实例内存 | `WebSocketSessionHolder` | Map | `userId → WebSocketSession`（本实例持有） |
-| Redis | `ws:sub:{topic}` | Set | 该**精确主题**已订阅的 userId 集合（正向索引，topic 为 1~3 段） |
-| Redis | `ws:userSub:{userId}` | Set | 该用户订阅的全部主题（反向索引，断开清理用） |
+| Redis | `global:ws:sub:{topic}` | Set | 该**精确主题**已订阅的 userId 集合（正向索引，topic 为 1~3 段） |
+| Redis | `global:ws:userSub:{userId}` | Set | 该用户订阅的全部主题（反向索引，断开清理用） |
 
 > 说明：订阅按「精确主题」逐条存储，**不做通配符展开**。路由时由消费端将消息主题拆成全部前缀再逐条查询（见 8.2），保证主类/子类/业务ID 三种粒度都能命中。
+>
+> 注意：订阅 key 以 `global:` 开头，用于**跳过项目的多租户 Redis key 前缀**——`TenantKeyPrefixHandler` 会给非 `global:` 的 key 自动加 `{tenantId}:` 前缀，而消费端在 RabbitMQ 监听线程中无租户上下文，会导致写入（带租户前缀）与读取（无前缀）的 key 不一致；加 `global:` 后读写 key 始终一致。
 
 ---
 
@@ -271,35 +291,39 @@ GET /websocket/subscription
 
 | # | 完整类名 | 状态 / 改动 |
 |---|----------|-------------|
-| 5 | `org.dromara.common.websocket.config.WebSocketConfig` | 自动装配入口：注册 handler/interceptor/监听器 + 订阅 service/controller Bean，`@Import` RabbitMQ 配置 |
+| 5 | `org.dromara.common.websocket.config.WebSocketConfig` | 自动装配入口（gated by websocket.enabled）：注册 handler/interceptor/监听器/发布控制器，`@Import` RabbitMQ 配置 |
 | 6 | `org.dromara.common.websocket.config.properties.WebSocketProperties` | 基本不变（path / allowedOrigins / enabled） |
 | 7 | `org.dromara.common.websocket.handler.PlusWebSocketHandler` | 连接/心跳回显；断开时清理订阅 |
 | 8 | `org.dromara.common.websocket.interceptor.PlusWebSocketInterceptor` | 基本不变（Sa-Token 鉴权） |
 | 9 | `org.dromara.common.websocket.holder.WebSocketSessionHolder` | 保持（内存会话 Map，key=userId） |
 | 10 | `org.dromara.common.websocket.utils.WebSocketUtils` | **移除 publish/subscribe，仅保留 sendMessage / sendPongMessage** |
-| 11 | `org.dromara.common.websocket.listener.WebSocketTopicListener` | **改为 @RabbitListener 消费 JSON + 前缀匹配路由 + 消息信封** |
+| 11 | `org.dromara.common.websocket.listener.WebSocketTopicListener` | **@RabbitListener 消费 JSON + 前缀匹配路由 + 消息信封 + 路由日志** |
 | 12 | `org.dromara.common.websocket.config.WebSocketRabbitConfig`（新增） | fanout 交换机 `websocket.exchange` + 每实例独立队列 |
-| 13 | `org.dromara.common.websocket.service.WebSocketSubscribeService`（新增） | 订阅关系增删查：`ws:sub:{topic}` 与 `ws:userSub:{userId}` |
-| 14 | `org.dromara.common.websocket.controller.WebSocketSubscribeController`（新增） | 订阅/退订/查询 REST 接口 |
-| 15 | `org.dromara.common.websocket.constant.WebSocketConstants` | 内部常量 LOGIN_USER_KEY / PING / PONG（已移除 WEB_SOCKET_TOPIC） |
+| 13 | `org.dromara.common.websocket.config.WebSocketSubscribeConfig`（新增） | 订阅 service/controller 自动装配（**非门控**，订阅接口始终可用） |
+| 14 | `org.dromara.common.websocket.service.WebSocketSubscribeService`（新增） | 订阅关系增删查：`global:global:ws:sub:{topic}` 与 `global:global:ws:userSub:{userId}` |
+| 15 | `org.dromara.common.websocket.controller.WebSocketSubscribeController`（新增） | 订阅/退订/查询 REST 接口 |
+| 16 | `org.dromara.common.websocket.controller.WebSocketMessageController`（新增） | 发布 REST 接口 `POST /websocket/publish`（测试推送） |
+| 17 | `org.dromara.common.websocket.constant.WebSocketConstants` | 内部常量 LOGIN_USER_KEY / PING / PONG（已移除 WEB_SOCKET_TOPIC） |
 
-> 注意：存在两个 `WebSocketConstants`——`org.dromara.websocket.api.constant.WebSocketConstants`（共享，交换机名）与 `org.dromara.common.websocket.constant.WebSocketConstants`（模块内部，会话/心跳常量），二者包不同、用途不同。
+> 注意：
+> 1. 存在两个 `WebSocketConstants`——`org.dromara.websocket.api.constant.WebSocketConstants`（共享，交换机名）与 `org.dromara.common.websocket.constant.WebSocketConstants`（模块内部，会话/心跳常量），二者包不同、用途不同。
+> 2. 订阅接口（`WebSocketSubscribeConfig`）**非门控**（始终可用）；发布接口（`WebSocketMessageController`）与 WebSocket 连接、RabbitMQ 消费者一样 **gated by websocket.enabled**。
 
 ### 5.2 后端（业务侧发布，仅新增少量代码）
 
 | # | 完整类名 | 改动 |
 |---|----------|------|
-| 16 | `org.dromara.system.controller.system.SysNoticeController` | 依赖 `spring-boot-starter-amqp` + `ruoyi-api-websocket`，通过 `RabbitTemplate` 发布消息到交换机（**不引用 websocket 模块**） |
+| 18 | `org.dromara.system.controller.system.SysNoticeController` | 依赖 `spring-boot-starter-amqp` + `ruoyi-api-websocket`，通过 `RabbitTemplate` 发布消息到交换机（**不引用 websocket 模块**） |
 
 ### 5.3 前端（主应用 + 子应用）
 
 | # | 文件 | 改动 |
 |---|------|------|
-| 17 | 主应用 `src/utils/websocket.ts`（已有） | **演进**：onmessage 解析 JSON，按 `type` 通过 `msgBus.emit('ws:'+type, data)` 派发 |
-| 18 | 主应用 `src/micro/messageBus.ts`（已有） | 复用 mitt 总线（已注入子应用），约定 `ws:{type}` 事件命名 |
-| 19 | 主应用订阅 API 封装 `src/api/websocket/index.ts`（新增） | 封装 subscribe / unsubscribe / 查询接口 |
-| 20 | 子应用（如 HIS）`src/views/home.vue` | 通过 `msgBus.on('ws:his/order')` 接收推送示例 |
-| 21 | 主应用 `src/layout/index.vue` | 登录后调用 `initWebSocket` 建连 + `subscribe(['system','system/sysNotice'])` 初始订阅 |
+| 19 | 主应用 `src/utils/websocket.ts`（已有） | **演进**：onmessage 解析 JSON，按 `type` 通过 `msgBus.emit('ws:'+type, data)` 派发 |
+| 20 | 主应用 `src/micro/messageBus.ts`（已有） | 复用 mitt 总线（已注入子应用），约定 `ws:{type}` 事件命名 |
+| 21 | 主应用订阅 API 封装 `src/api/websocket/index.ts`（新增） | 封装 subscribe / unsubscribe / 查询接口 |
+| 22 | 子应用（如 HIS）`src/views/his/interface/index.vue` | 推送测试界面（本地模拟 + 服务端推送按钮） |
+| 23 | 主应用 `src/layout/index.vue` | 登录后调用 `initWebSocket` 建连 + `subscribe(['system','system/sysNotice'])` 初始订阅 |
 
 ---
 
@@ -379,7 +403,7 @@ Phase 1（后端：共享 api + MQ 拓扑 + 订阅 + MQ 消费替换 + 联调）
 - 消费端收到消息后，对 `type` 做**前缀匹配**：
   1. 拆分 `type` 为段数组，如 `["his","order","10086"]`。
   2. 生成全部前缀：`["his", "his/order", "his/order/10086"]`。
-  3. 逐个查询 `ws:sub:{前缀}` 集合，**并集去重**得到目标 userId 集合。
+  3. 逐个查询 `global:ws:sub:{前缀}` 集合，**并集去重**得到目标 userId 集合。
   4. 对集合内每个 userId，查**本实例内存会话**（`WebSocketSessionHolder`）并推送；本实例无该会话则跳过。
 - 定向推送（`sessionKeys` 非空）**跳过**订阅匹配，直接按 userId 推送。
 - 广播（`type` 与 `sessionKeys` 均为空）推送给**本实例全部**在线会话。
@@ -394,9 +418,9 @@ Phase 1（后端：共享 api + MQ 拓扑 + 订阅 + MQ 消费替换 + 联调）
 
 ### 8.4 订阅生命周期管理
 
-- **subscribe**：以 `LoginHelper.getUserId()` 识别用户 → 对每个 topic 校验合法性 → 写入 `ws:sub:{topic}`（SADD，幂等去重）与 `ws:userSub:{userId}`。
-- **unsubscribe**：从 `ws:sub:{topic}` 移除 userId；若 set 为空则删除该 key；同步更新反向索引。
-- **disconnect**：读 `ws:userSub:{userId}` 得到其全部订阅主题，逐个从 `ws:sub:{topic}` 移除 userId，最后删除反向索引，**不留脏数据**。
+- **subscribe**：以 `LoginHelper.getUserId()` 识别用户 → 对每个 topic 校验合法性 → 写入 `global:ws:sub:{topic}`（SADD，幂等去重）与 `global:ws:userSub:{userId}`。
+- **unsubscribe**：从 `global:ws:sub:{topic}` 移除 userId；若 set 为空则删除该 key；同步更新反向索引。
+- **disconnect**：读 `global:ws:userSub:{userId}` 得到其全部订阅主题，逐个从 `global:ws:sub:{topic}` 移除 userId，最后删除反向索引，**不留脏数据**。
 - **重复订阅幂等**：同一用户重复订阅同一主题不产生重复推送（Set 去重）。
 
 ### 8.5 鉴权要求
@@ -427,7 +451,7 @@ Phase 1（后端：共享 api + MQ 拓扑 + 订阅 + MQ 消费替换 + 联调）
 | **fanout 拓扑正确性** | 每实例独立 autoDelete 队列绑定 fanout，避免用共享队列造成消息被轮询到单实例而漏推 |
 | **前缀匹配正确性** | 必须按**分段边界**匹配，避免 `his/order` 误匹配 `his/orderX` 这类前缀误判 |
 | **订阅不展开通配符** | 订阅按精确主题存储，路由时对消息主题生成前缀查询，而非对订阅主题展开，避免 Redis 冗余 |
-| **订阅生命周期** | 断开必须清理订阅（走 `ws:userSub:{userId}` 反向索引），否则 Redis 残留脏数据导致推送空转 |
+| **订阅生命周期** | 断开必须清理订阅（走 `global:ws:userSub:{userId}` 反向索引），否则 Redis 残留脏数据导致推送空转 |
 | **重连后重新订阅** | 连接重建后订阅可能已被清理，需前端重新订阅（userId 不变） |
 | **广播语义** | `type` 与 `sessionKeys` 均为空 = 广播，需在消费端显式区分 |
 | **消息 JSON 规范** | MQ 消息与 WebSocket 推送均使用 JSON；`message` 字段为字符串，前端需二次 JSON.parse |
